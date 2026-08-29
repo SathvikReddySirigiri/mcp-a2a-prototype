@@ -1,4 +1,4 @@
-"""Send a TCGA expression lookup task to the local A2A agent.
+"""Send a task to a local A2A agent.
 
 Uses a2a-sdk 1.1.x ClientFactory / create_client so the request stays on
 protocol 1.0 (protobuf types, SendMessage / SendStreamingMessage). The
@@ -8,6 +8,7 @@ factory sets A2A-Version; do not hand-build JSON-RPC with v0.3 fields
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 
 import httpx
@@ -17,10 +18,25 @@ from a2a.client import A2ACardResolver, ClientConfig, create_client
 from a2a.helpers import get_artifact_text, get_message_text, new_text_message
 from a2a.types import Artifact, Role, SendMessageRequest, TaskState
 
-AGENT_URL = "http://127.0.0.1:8001"
-QUERY = "MSLN in PAAD"
 # MCP lookup plus cBioPortal can exceed httpx's default 5s timeout.
 TIMEOUT = httpx.Timeout(120.0)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Send a task to a local A2A agent.")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        default="http://127.0.0.1:8001",
+        help="Agent base URL (default: http://127.0.0.1:8001)",
+    )
+    parser.add_argument(
+        "message",
+        nargs="?",
+        default="MSLN in PAAD",
+        help='User message to send (default: "MSLN in PAAD")',
+    )
+    return parser.parse_args()
 
 
 def _print_artifact(artifact: Artifact) -> None:
@@ -33,9 +49,10 @@ def _print_artifact(artifact: Artifact) -> None:
         print(MessageToJson(artifact, ensuring_ascii=False))
 
 
-async def main() -> None:
+async def main(url: str, message: str) -> None:
+    print(f"Sending to {url}: {message}")
     async with httpx.AsyncClient(timeout=TIMEOUT) as httpx_client:
-        resolver = A2ACardResolver(httpx_client, AGENT_URL)
+        resolver = A2ACardResolver(httpx_client, url)
         card = await resolver.get_agent_card()
         print(f"Agent: {card.name} v{card.version}")
         for iface in card.supported_interfaces:
@@ -48,7 +65,7 @@ async def main() -> None:
             client_config=ClientConfig(httpx_client=httpx_client),
         )
         request = SendMessageRequest(
-            message=new_text_message(QUERY, role=Role.ROLE_USER),
+            message=new_text_message(message, role=Role.ROLE_USER),
         )
 
         artifacts: dict[str, Artifact] = {}
@@ -83,4 +100,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    asyncio.run(main(args.url, args.message))
