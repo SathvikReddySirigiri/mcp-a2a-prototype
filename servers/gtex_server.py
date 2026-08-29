@@ -6,9 +6,11 @@ median mRNA expression for a gene in a GTEx healthy tissue.
 
 Run standalone to smoke-test:
     python servers/gtex_server.py --selftest MSLN
+    python servers/gtex_server.py --selftest MSLN Lung
 """
 
 import sys
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -130,26 +132,31 @@ def _fetch_median(gencode_id: str, tissue_id: str) -> dict[str, Any]:
     r.raise_for_status()
     data = r.json().get("data") or []
     if not data:
-        raise LookupError(
-            f"No expression data for {gencode_id} in {tissue_id}."
-        )
+        raise LookupError(f"No expression data for {gencode_id} in {tissue_id}.")
     return data[0]
 
 
-def _fetch_sample_count(tissue_id: str) -> int | None:
-    """RNA-seq sample n for a tissue in DATASET_ID, from tissueSiteDetail."""
+@lru_cache(maxsize=1)
+def _tissue_sample_counts() -> dict[str, int]:
+    """Tissue -> RNA-seq sample n for DATASET_ID. Fetched once per process."""
     r = httpx.get(
         f"{API}/dataset/tissueSiteDetail",
         params={"datasetId": DATASET_ID, "itemsPerPage": 100},
         timeout=TIMEOUT,
     )
     r.raise_for_status()
+    counts: dict[str, int] = {}
     for rec in r.json().get("data") or []:
-        if rec.get("tissueSiteDetailId") == tissue_id:
-            summary = rec.get("rnaSeqSampleSummary") or {}
-            count = summary.get("totalCount")
-            return int(count) if count is not None else None
-    return None
+        tid = rec.get("tissueSiteDetailId")
+        total = (rec.get("rnaSeqSampleSummary") or {}).get("totalCount")
+        if tid and total is not None:
+            counts[tid] = int(total)
+    return counts
+
+
+def _fetch_sample_count(tissue_id: str) -> int | None:
+    """RNA-seq sample n for one tissue, served from the cached table."""
+    return _tissue_sample_counts().get(tissue_id)
 
 
 @mcp.tool()
@@ -159,9 +166,18 @@ def get_normal_expression(gene: str, tissue: str = "Pancreas") -> str:
     Returns the median mRNA expression of a HUGO gene symbol in a GTEx
     healthy tissue, in TPM.
 
-    GTEx TPM values are not directly comparable to cBioPortal RSEM values
-    from get_expression, because they use different normalization pipelines.
-    The two must not be divided to produce a fold change.
+    Two limitations bound what this tool can support:
+
+    1. Units. GTEx TPM values are not directly comparable to cBioPortal
+       RSEM values from get_expression, because they use different
+       normalization pipelines. The two must not be divided to produce
+       a fold change.
+
+    2. Population. GTEx samples come from healthy post-mortem donors, not
+       from adjacent-normal tissue in the same patients as any tumor cohort.
+       Donor demographics, tissue collection, and batch effects all differ.
+       A GTEx-versus-TCGA comparison is therefore directional evidence, not
+       a matched tumor-versus-normal analysis.
 
     Args:
         gene: HUGO gene symbol, e.g. "MSLN", "CEACAM5", "KRAS".
@@ -187,6 +203,11 @@ def get_normal_expression(gene: str, tissue: str = "Pancreas") -> str:
     except httpx.HTTPError as e:
         return f"Expression fetch failed: {e}"
 
+    symbol = row.get("geneSymbol") or gene_rec.get("geneSymbol") or gene
+    median = row.get("median")
+    if median is None:
+        return f"No median value returned for {symbol} in {tissue_id}."
+
     samples_line = "  samples : unavailable"
     try:
         n = _fetch_sample_count(tissue_id)
@@ -195,12 +216,10 @@ def get_normal_expression(gene: str, tissue: str = "Pancreas") -> str:
     except httpx.HTTPError:
         pass
 
-    symbol = row.get("geneSymbol") or gene_rec.get("geneSymbol") or gene
-    median = row["median"]
     unit = row.get("unit") or "TPM"
 
     return (
-        f"{symbol} in GTEx {tissue_id} (healthy tissue)\n"
+        f"{symbol} in GTEx {tissue_id} (healthy donors)\n"
         f"{samples_line}\n"
         f"  median  : {median:.4f}\n"
         f"  units   : {unit}"
@@ -214,3 +233,4 @@ if __name__ == "__main__":
         print(get_normal_expression(gene, tissue))
     else:
         mcp.run(transport="stdio")
+    
