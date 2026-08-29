@@ -8,7 +8,7 @@ Domain: target discovery over public TCGA expression data.
 ## Status
 
 - [x] Part 1 — MCP server for TCGA expression lookup (cBioPortal)
-- [ ] Part 2 — GTEx normal baseline, HPA localization
+- [x] Part 2 — GTEx normal baseline, HPA localization
 - [ ] Part 3 — Split into A2A agents
 - [ ] Part 4 — Human-in-the-loop via input-required
 
